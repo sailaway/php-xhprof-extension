@@ -21,6 +21,22 @@ void tideways_free (void *ptr);
 void *tideways_realloc (void *ptr, size_t size);
 
 /**
+ * Free any items in the callgraph_list.
+ */
+void tracing_free_the_callgraph_list(TSRMLS_D)
+{
+    xhprof_callgraph_bucket *bucket = TXRG(callgraph_list);
+    xhprof_callgraph_bucket *current;
+
+    while (bucket) {
+        current = bucket;
+        bucket = bucket->next;
+        tracing_callgraph_bucket_free(current);
+    }
+    TXRG(callgraph_list) = NULL;
+}
+
+/**
  * Free any items in the free list.
  */
 static zend_always_inline void tracing_free_the_free_list(TSRMLS_D)
@@ -168,6 +184,40 @@ zend_ulong tracing_callgraph_bucket_key(xhprof_frame_t *frame)
     return hash;
 }
 
+void tracing_callgraph_get_parent_name(xhprof_callgraph_bucket *bucket, char *symbol, size_t symbol_len TSRMLS_DC){
+    if (bucket->parent_class) {
+        if (bucket->parent_recurse_level > 0) {
+            snprintf(symbol, symbol_len, "%s::%s@%d", ZSTR_VAL(bucket->parent_class), ZSTR_VAL(bucket->parent_function), bucket->parent_recurse_level);
+        } else {
+            snprintf(symbol, symbol_len, "%s::%s", ZSTR_VAL(bucket->parent_class), ZSTR_VAL(bucket->parent_function));
+        }
+    } else if (bucket->parent_function) {
+        if (bucket->parent_recurse_level > 0) {
+            snprintf(symbol, symbol_len, "%s@%d", ZSTR_VAL(bucket->parent_function), bucket->parent_recurse_level);
+        } else {
+            snprintf(symbol, symbol_len, "%s", ZSTR_VAL(bucket->parent_function));
+        }
+    } else {
+        snprintf(symbol, symbol_len, "");
+    }
+}
+
+void tracing_callgraph_get_child_name(xhprof_callgraph_bucket *bucket, char *symbol, size_t symbol_len TSRMLS_DC){
+    if (bucket->child_class) {
+        if (bucket->child_recurse_level > 0) {
+            snprintf(symbol, symbol_len, "%s::%s@%d", ZSTR_VAL(bucket->child_class), ZSTR_VAL(bucket->child_function), bucket->child_recurse_level);
+        } else {
+            snprintf(symbol, symbol_len, "%s::%s", ZSTR_VAL(bucket->child_class), ZSTR_VAL(bucket->child_function));
+        }
+    } else if (bucket->child_function) {
+        if (bucket->child_recurse_level > 0) {
+            snprintf(symbol, symbol_len, "%s@%d", ZSTR_VAL(bucket->child_function), bucket->child_recurse_level);
+        } else {
+            snprintf(symbol, symbol_len, "%s", ZSTR_VAL(bucket->child_function));
+        }
+    }
+}
+
 void tracing_callgraph_get_parent_child_name(xhprof_callgraph_bucket *bucket, char *symbol, size_t symbol_len TSRMLS_DC)
 {
     if (bucket->parent_class) {
@@ -206,51 +256,100 @@ void tracing_callgraph_append_to_array(zval *return_value TSRMLS_DC)
     int i = 0;
     xhprof_callgraph_bucket *bucket;
     char symbol[512] = "";
+    char parent_name[512] = "";
+    char self_name[512] = "";
     zval stats_zv, *stats = &stats_zv;
+    zend_ulong index = 0;
+    xhprof_callgraph_bucket *current;
 
     int as_mu =
         (TXRG(flags) & (TIDEWAYS_XHPROF_FLAGS_MEMORY_ALLOC_AS_MU | TIDEWAYS_XHPROF_FLAGS_MEMORY_MU))
             == TIDEWAYS_XHPROF_FLAGS_MEMORY_ALLOC_AS_MU;
 
-    for (i = 0; i < TIDEWAYS_XHPROF_CALLGRAPH_SLOTS; i++) {
-        bucket = TXRG(callgraph_buckets)[i];
+    bucket = TXRG(callgraph_list);
+    while (bucket) {
+        tracing_callgraph_get_parent_child_name(bucket, symbol, sizeof(symbol) TSRMLS_CC);
+        tracing_callgraph_get_parent_name(bucket, parent_name, sizeof(parent_name) TSRMLS_CC);
+        tracing_callgraph_get_child_name(bucket, self_name, sizeof(self_name) TSRMLS_CC);
 
-        while (bucket) {
-            tracing_callgraph_get_parent_child_name(bucket, symbol, sizeof(symbol) TSRMLS_CC);
+        array_init(stats);
+        add_assoc_long(stats, "ct", bucket->count);
+        add_assoc_long(stats, "wt", bucket->wall_time);
+        add_assoc_string(stats,"parent",parent_name);
+        add_assoc_string(stats,"self",self_name);
 
-            array_init(stats);
-            add_assoc_long(stats, "ct", bucket->count);
-            add_assoc_long(stats, "wt", bucket->wall_time);
+        if (TXRG(flags) & TIDEWAYS_XHPROF_FLAGS_MEMORY_ALLOC) {
+            add_assoc_long(stats, "mem.na", bucket->num_alloc);
+            add_assoc_long(stats, "mem.nf", bucket->num_free);
+            add_assoc_long(stats, "mem.aa", bucket->amount_alloc);
 
-            if (TXRG(flags) & TIDEWAYS_XHPROF_FLAGS_MEMORY_ALLOC) {
-                add_assoc_long(stats, "mem.na", bucket->num_alloc);
-                add_assoc_long(stats, "mem.nf", bucket->num_free);
-                add_assoc_long(stats, "mem.aa", bucket->amount_alloc);
-
-                if (as_mu) {
-                    add_assoc_long(stats, "mu", bucket->amount_alloc);
-                }
+            if (as_mu) {
+                add_assoc_long(stats, "mu", bucket->amount_alloc);
             }
-
-            if (TXRG(flags) & TIDEWAYS_XHPROF_FLAGS_CPU) {
-                add_assoc_long(stats, "cpu", bucket->cpu_time);
-            }
-
-            if (TXRG(flags) & TIDEWAYS_XHPROF_FLAGS_MEMORY_MU) {
-                add_assoc_long(stats, "mu", bucket->memory);
-            }
-
-            if (TXRG(flags) & TIDEWAYS_XHPROF_FLAGS_MEMORY_PMU) {
-                add_assoc_long(stats, "pmu", bucket->memory_peak);
-            }
-
-            add_assoc_zval(return_value, symbol, stats);
-
-            TXRG(callgraph_buckets)[i] = bucket->next;
-            tracing_callgraph_bucket_free(bucket);
-            bucket = TXRG(callgraph_buckets)[i];
         }
+
+        if (TXRG(flags) & TIDEWAYS_XHPROF_FLAGS_CPU) {
+            add_assoc_long(stats, "cpu", bucket->cpu_time);
+        }
+
+        if (TXRG(flags) & TIDEWAYS_XHPROF_FLAGS_MEMORY_MU) {
+            add_assoc_long(stats, "mu", bucket->memory);
+        }
+
+        if (TXRG(flags) & TIDEWAYS_XHPROF_FLAGS_MEMORY_PMU) {
+            add_assoc_long(stats, "pmu", bucket->memory_peak);
+        }
+
+        add_index_zval(return_value, index, stats);
+        // add_assoc_zval(return_value, symbol, stats);
+
+        current = bucket;
+        bucket = bucket->next;
+        tracing_callgraph_bucket_free(current);
+
+        index++;
     }
+    TXRG(callgraph_list) = NULL;
+
+//    for (i = 0; i < TIDEWAYS_XHPROF_CALLGRAPH_SLOTS; i++) {
+//        bucket = TXRG(callgraph_buckets)[i];
+//
+//        while (bucket) {
+//            tracing_callgraph_get_parent_child_name(bucket, symbol, sizeof(symbol) TSRMLS_CC);
+//
+//            array_init(stats);
+//            add_assoc_long(stats, "ct", bucket->count);
+//            add_assoc_long(stats, "wt", bucket->wall_time);
+//
+//            if (TXRG(flags) & TIDEWAYS_XHPROF_FLAGS_MEMORY_ALLOC) {
+//                add_assoc_long(stats, "mem.na", bucket->num_alloc);
+//                add_assoc_long(stats, "mem.nf", bucket->num_free);
+//                add_assoc_long(stats, "mem.aa", bucket->amount_alloc);
+//
+//                if (as_mu) {
+//                    add_assoc_long(stats, "mu", bucket->amount_alloc);
+//                }
+//            }
+//
+//            if (TXRG(flags) & TIDEWAYS_XHPROF_FLAGS_CPU) {
+//                add_assoc_long(stats, "cpu", bucket->cpu_time);
+//            }
+//
+//            if (TXRG(flags) & TIDEWAYS_XHPROF_FLAGS_MEMORY_MU) {
+//                add_assoc_long(stats, "mu", bucket->memory);
+//            }
+//
+//            if (TXRG(flags) & TIDEWAYS_XHPROF_FLAGS_MEMORY_PMU) {
+//                add_assoc_long(stats, "pmu", bucket->memory_peak);
+//            }
+//
+//            add_assoc_zval(return_value, symbol, stats);
+//
+//            TXRG(callgraph_buckets)[i] = bucket->next;
+//            tracing_callgraph_bucket_free(bucket);
+//            bucket = TXRG(callgraph_buckets)[i];
+//        }
+//    }
 }
 
 void tracing_begin(zend_long flags TSRMLS_DC)
@@ -259,6 +358,7 @@ void tracing_begin(zend_long flags TSRMLS_DC)
 
     TXRG(flags) = flags;
     TXRG(callgraph_frames) = NULL;
+    tracing_free_the_callgraph_list();
 
     for (i = 0; i < TIDEWAYS_XHPROF_CALLGRAPH_SLOTS; i++) {
         TXRG(callgraph_buckets)[i] = NULL;
@@ -289,6 +389,7 @@ void tracing_request_init(TSRMLS_D)
 
 void tracing_request_shutdown()
 {
+    tracing_free_the_callgraph_list(TSRMLS_C);
     tracing_free_the_free_list(TSRMLS_C);
 }
 

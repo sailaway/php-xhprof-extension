@@ -105,6 +105,8 @@ PHP_RSHUTDOWN_FUNCTION(tideways_xhprof)
         }
     }
 
+    tracing_free_the_callgraph_list();
+
     tracing_request_shutdown();
 
     return SUCCESS;

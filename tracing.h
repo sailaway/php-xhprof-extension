@@ -16,6 +16,7 @@ void tracing_callgraph_get_parent_child_name(xhprof_callgraph_bucket *bucket, ch
 zend_ulong tracing_callgraph_bucket_key(xhprof_frame_t *frame);
 xhprof_callgraph_bucket *tracing_callgraph_bucket_find(xhprof_callgraph_bucket *bucket, xhprof_frame_t *current_frame, xhprof_frame_t *previous, zend_long key);
 void tracing_callgraph_bucket_free(xhprof_callgraph_bucket *bucket);
+void tracing_free_the_callgraph_list(TSRMLS_D);
 void tracing_begin(zend_long flags TSRMLS_DC);
 void tracing_end(TSRMLS_D);
 void tracing_enter_root_frame(TSRMLS_D);
@@ -163,15 +164,15 @@ zend_always_inline static void tracing_exit_frame_callgraph(TSRMLS_D)
     xhprof_frame_t *previous = current_frame->previous_frame;
     zend_long duration = time_milliseconds(TXRG(clock_source), TXRG(timebase_factor)) - current_frame->wt_start;
 
-    zend_ulong key = tracing_callgraph_bucket_key(current_frame);
-    unsigned int slot = (unsigned int)key % TIDEWAYS_XHPROF_CALLGRAPH_SLOTS;
-    xhprof_callgraph_bucket *bucket = TXRG(callgraph_buckets)[slot];
+    //zend_ulong key = tracing_callgraph_bucket_key(current_frame);
+    //unsigned int slot = (unsigned int)key % TIDEWAYS_XHPROF_CALLGRAPH_SLOTS;
+    xhprof_callgraph_bucket *bucket;// = TXRG(callgraph_buckets)[slot];
 
-    bucket = tracing_callgraph_bucket_find(bucket, current_frame, previous, key);
+    //bucket = tracing_callgraph_bucket_find(bucket, current_frame, previous, key);
 
-    if (bucket == NULL) {
+    //if (bucket == NULL) {
         bucket = emalloc(sizeof(xhprof_callgraph_bucket));
-        bucket->key = key;
+        //bucket->key = key;
         bucket->child_class = current_frame->class_name ? zend_string_copy(current_frame->class_name) : NULL;
         bucket->child_function = zend_string_copy(current_frame->function_name);
 
@@ -194,10 +195,10 @@ zend_always_inline static void tracing_exit_frame_callgraph(TSRMLS_D)
         bucket->num_free = 0;
         bucket->amount_alloc = 0;
         bucket->child_recurse_level = current_frame->recurse_level;
-        bucket->next = TXRG(callgraph_buckets)[slot];
+        //bucket->next = TXRG(callgraph_buckets)[slot];
 
-        TXRG(callgraph_buckets)[slot] = bucket;
-    }
+        //TXRG(callgraph_buckets)[slot] = bucket;
+    //}
 
     bucket->count++;
     bucket->wall_time += duration;
@@ -217,6 +218,8 @@ zend_always_inline static void tracing_exit_frame_callgraph(TSRMLS_D)
     if (TXRG(flags) & TIDEWAYS_XHPROF_FLAGS_MEMORY_PMU) {
         bucket->memory_peak += (zend_memory_peak_usage(0 TSRMLS_CC) - current_frame->pmu_start);
     }
+    bucket->next = TXRG(callgraph_list);
+    TXRG(callgraph_list) = bucket;
 
     TXRG(function_hash_counters)[current_frame->hash_code]--;
 

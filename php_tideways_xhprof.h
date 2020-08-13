@@ -85,6 +85,7 @@ ZEND_BEGIN_MODULE_GLOBALS(tideways_xhprof)
     xhprof_frame_t *frame_free_list;
     zend_ulong function_hash_counters[TIDEWAYS_XHPROF_CALLGRAPH_COUNTER_SIZE];
     xhprof_callgraph_bucket* callgraph_buckets[TIDEWAYS_XHPROF_CALLGRAPH_SLOTS];
+    xhprof_callgraph_bucket* callgraph_list;
     zend_long flags;
     long int num_alloc;
     long int num_free;
