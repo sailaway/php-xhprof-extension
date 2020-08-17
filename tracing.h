@@ -99,12 +99,75 @@ static zend_always_inline zend_string* tracing_get_function_name(zend_execute_da
     return curr_func->common.function_name;
 }
 
+xhprof_callgraph_bucket* find_bucket_in_children(xhprof_callgraph_bucket *parent_bucket,xhprof_frame_t *current_frame){
+    if(!parent_bucket){
+        return NULL;
+    }
+    xhprof_callgraph_bucket *bucket = parent_bucket->children;
+    while(bucket){
+        if(bucket->child_class == current_frame->class_name && zend_string_equals(bucket->child_function, current_frame->function_name)){
+            return bucket;
+        }
+        bucket = bucket->next_sibling;
+    }
+    return NULL;
+}
+
+void add_bucket_to_parent_bucket(xhprof_callgraph_bucket *parent_bucket,xhprof_callgraph_bucket *bucket){
+    xhprof_callgraph_bucket *bucket;
+    if(!parent_bucket){
+        return;
+    }
+    if(!parent_bucket->children){
+        parent_bucket->children = bucket;
+        return;
+    }
+    bucket = parent_bucket->children;
+    while(bucket->next_sibling){
+        bucket = bucket->next_sibling;
+    }
+    bucket->next_sibling = bucket;
+}
+
+void init_call_bucket(xhprof_frame_t *current_frame){
+    xhprof_frame_t *parent_frame = TXRG(callgraph_frames);
+    xhprof_callgraph_bucket *parent_bucket = NULL;
+    xhprof_callgraph_bucket *bucket;
+
+    if(parent_frame){
+        parent_bucket = parent_frame->call_bucket;
+    }
+    bucket = find_bucket_in_children(parent_bucket,current_frame);
+
+    if(bucket){
+        return bucket;
+    }
+    bucket = emalloc(sizeof(xhprof_callgraph_bucket));
+    bucket->child_class = current_frame->class_name ? zend_string_copy(current_frame->class_name) : NULL;
+    bucket->child_function = zend_string_copy(current_frame->function_name);
+
+    bucket->count = 0;
+    bucket->wall_time = 0;
+    bucket->cpu_time = 0;
+    bucket->memory = 0;
+    bucket->memory_peak = 0;
+    bucket->num_alloc = 0;
+    bucket->num_free = 0;
+    bucket->amount_alloc = 0;
+    bucket->child_recurse_level = current_frame->recurse_level;
+    bucket->parent = parent_bucket;
+    add_bucket_to_parent_bucket(parent_bucket,bucket);
+
+    return bucket;
+}
+
 zend_always_inline static int tracing_enter_frame_callgraph(zend_string *root_symbol, zend_execute_data *execute_data TSRMLS_DC)
 {
     zend_string *function_name = (root_symbol != NULL) ? zend_string_copy(root_symbol) : tracing_get_function_name(execute_data TSRMLS_CC);
     xhprof_frame_t *current_frame;
     xhprof_frame_t *p;
     int recurse_level = 0;
+    xhprof_callgraph_bucket *bucket;
 
     if (function_name == NULL) {
         return 0;
@@ -137,9 +200,6 @@ zend_always_inline static int tracing_enter_frame_callgraph(zend_string *root_sy
      * that should be "good" enough, we sort into 1024 buckets only anyways */
     current_frame->hash_code = ZSTR_HASH(function_name) % TIDEWAYS_XHPROF_CALLGRAPH_COUNTER_SIZE;
 
-    /* Update entries linked list */
-    TXRG(callgraph_frames) = current_frame;
-
     if (TXRG(function_hash_counters)[current_frame->hash_code] > 0) {
         /* Find this symbols recurse level */
         for(p = current_frame->previous_frame; p; p = p->previous_frame) {
@@ -154,6 +214,15 @@ zend_always_inline static int tracing_enter_frame_callgraph(zend_string *root_sy
     /* Init current function's recurse level */
     current_frame->recurse_level = recurse_level;
 
+    /* Update entries linked list */
+    bucket = init_call_bucket(current_frame);
+    current_frame->call_bucket = bucket;
+    TXRG(callgraph_frames) = current_frame;
+
+    if(root_symbol != NULL){
+        TXRG(callgraph_tree) = bucket;
+    }
+
     return 1;
 }
 
@@ -163,41 +232,7 @@ zend_always_inline static void tracing_exit_frame_callgraph(TSRMLS_D)
     xhprof_frame_t *previous = current_frame->previous_frame;
     zend_long duration = time_milliseconds(TXRG(clock_source), TXRG(timebase_factor)) - current_frame->wt_start;
 
-    zend_ulong key = tracing_callgraph_bucket_key(current_frame);
-    unsigned int slot = (unsigned int)key % TIDEWAYS_XHPROF_CALLGRAPH_SLOTS;
-    xhprof_callgraph_bucket *bucket = TXRG(callgraph_buckets)[slot];
-
-    bucket = tracing_callgraph_bucket_find(bucket, current_frame, previous, key);
-
-    if (bucket == NULL) {
-        bucket = emalloc(sizeof(xhprof_callgraph_bucket));
-        bucket->key = key;
-        bucket->child_class = current_frame->class_name ? zend_string_copy(current_frame->class_name) : NULL;
-        bucket->child_function = zend_string_copy(current_frame->function_name);
-
-        if (previous) {
-            bucket->parent_class = previous->class_name ? zend_string_copy(current_frame->previous_frame->class_name) : NULL;
-            bucket->parent_function = zend_string_copy(previous->function_name);
-            bucket->parent_recurse_level = previous->recurse_level;
-        } else {
-            bucket->parent_class = NULL;
-            bucket->parent_function = NULL;
-            bucket->parent_recurse_level = 0;
-        }
-
-        bucket->count = 0;
-        bucket->wall_time = 0;
-        bucket->cpu_time = 0;
-        bucket->memory = 0;
-        bucket->memory_peak = 0;
-        bucket->num_alloc = 0;
-        bucket->num_free = 0;
-        bucket->amount_alloc = 0;
-        bucket->child_recurse_level = current_frame->recurse_level;
-        bucket->next = TXRG(callgraph_buckets)[slot];
-
-        TXRG(callgraph_buckets)[slot] = bucket;
-    }
+    xhprof_callgraph_bucket *bucket = current_frame->call_bucket;
 
     bucket->count++;
     bucket->wall_time += duration;

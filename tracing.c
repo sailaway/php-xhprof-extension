@@ -201,6 +201,40 @@ void tracing_callgraph_get_parent_child_name(xhprof_callgraph_bucket *bucket, ch
     }
 }
 
+zval* bucket_tree_to_array(xhprof_callgraph_bucket *bucket,int as_mu){
+    zval stats_zv, *stats = &stats_zv;
+    if(!bucket){
+        return;
+    }
+    add_assoc_long(stats, "ct", bucket->count);
+    add_assoc_long(stats, "wt", bucket->wall_time);
+
+    if (TXRG(flags) & TIDEWAYS_XHPROF_FLAGS_MEMORY_ALLOC) {
+        add_assoc_long(stats, "mem.na", bucket->num_alloc);
+        add_assoc_long(stats, "mem.nf", bucket->num_free);
+        add_assoc_long(stats, "mem.aa", bucket->amount_alloc);
+
+        if (as_mu) {
+            add_assoc_long(stats, "mu", bucket->amount_alloc);
+        }
+    }
+
+    if (TXRG(flags) & TIDEWAYS_XHPROF_FLAGS_CPU) {
+        add_assoc_long(stats, "cpu", bucket->cpu_time);
+    }
+
+    if (TXRG(flags) & TIDEWAYS_XHPROF_FLAGS_MEMORY_MU) {
+        add_assoc_long(stats, "mu", bucket->memory);
+    }
+
+    if (TXRG(flags) & TIDEWAYS_XHPROF_FLAGS_MEMORY_PMU) {
+        add_assoc_long(stats, "pmu", bucket->memory_peak);
+    }
+    // append children
+    // add_assoc_zval(return_value, symbol, stats);
+    return stats;
+}
+
 void tracing_callgraph_append_to_array(zval *return_value TSRMLS_DC)
 {
     int i = 0;
@@ -211,6 +245,8 @@ void tracing_callgraph_append_to_array(zval *return_value TSRMLS_DC)
     int as_mu =
         (TXRG(flags) & (TIDEWAYS_XHPROF_FLAGS_MEMORY_ALLOC_AS_MU | TIDEWAYS_XHPROF_FLAGS_MEMORY_MU))
             == TIDEWAYS_XHPROF_FLAGS_MEMORY_ALLOC_AS_MU;
+
+
 
     for (i = 0; i < TIDEWAYS_XHPROF_CALLGRAPH_SLOTS; i++) {
         bucket = TXRG(callgraph_buckets)[i];
