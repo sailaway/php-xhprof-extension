@@ -1,0 +1,42 @@
+[{
+    "ct": 1,
+    "wt": 3466,
+    "function": "main()",
+    "cpu": 3001,
+    "mu": 44768,
+    "pmu": 43472,
+    "children": [{
+        "ct": 3,
+        "wt": 87,
+        "cls": "Composer\\Autoload\\ClassLoader",
+        "function": "loadClass",
+        "cpu": 85,
+        "mu": 2448,
+        "pmu": 0,
+        "children": [{
+            "ct": 3,
+            "wt": 45,
+            "cls": "Composer\\Autoload\\ClassLoader",
+            "function": "findFile",
+            "cpu": 44,
+            "mu": 480,
+            "pmu": 0,
+            "children": [{
+                "ct": 3,
+                "wt": 31,
+                "cls": "Composer\\Autoload\\ClassLoader",
+                "function": "findFileWithExtension",
+                "cpu": 33,
+                "mu": 240,
+                "pmu": 0
+            }]
+        }, {
+            "ct": 1,
+            "wt": 28,
+            "function": "Composer\\Autoload\\includeFile",
+            "cpu": 28,
+            "mu": 1840,
+            "pmu": 0
+        }]
+    }]
+}]
