@@ -95,16 +95,6 @@ PHP_RSHUTDOWN_FUNCTION(tideways_xhprof)
 
     tracing_end(TSRMLS_C);
 
-    for (i = 0; i < TIDEWAYS_XHPROF_CALLGRAPH_SLOTS; i++) {
-        bucket = TXRG(callgraph_buckets)[i];
-
-        while (bucket) {
-            TXRG(callgraph_buckets)[i] = bucket->next;
-            tracing_callgraph_bucket_free(bucket);
-            bucket = TXRG(callgraph_buckets)[i];
-        }
-    }
-
     tracing_request_shutdown();
 
     return SUCCESS;

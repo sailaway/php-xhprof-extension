@@ -68,3 +68,4 @@ src/Tideways/*.lo
 src/Tideways/.libs
 .vscode
 .idea
+.DS_Store

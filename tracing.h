@@ -12,9 +12,6 @@
 #define TIDEWAYS_XHPROF_FLAGS_NO_BUILTINS 8
 
 void tracing_callgraph_append_to_array(zval *return_value TSRMLS_DC);
-void tracing_callgraph_get_parent_child_name(xhprof_callgraph_bucket *bucket, char *symbol, size_t symbol_len TSRMLS_DC);
-zend_ulong tracing_callgraph_bucket_key(xhprof_frame_t *frame);
-xhprof_callgraph_bucket *tracing_callgraph_bucket_find(xhprof_callgraph_bucket *bucket, xhprof_frame_t *current_frame, xhprof_frame_t *previous, zend_long key);
 void tracing_callgraph_bucket_free(xhprof_callgraph_bucket *bucket);
 void tracing_begin(zend_long flags TSRMLS_DC);
 void tracing_end(TSRMLS_D);
@@ -22,6 +19,9 @@ void tracing_enter_root_frame(TSRMLS_D);
 void tracing_request_init(TSRMLS_D);
 void tracing_request_shutdown();
 void tracing_determine_clock_source();
+
+void free_bucket_tree();
+xhprof_callgraph_bucket* init_find_call_bucket(xhprof_frame_t *current_frame);
 
 #define TXRG(v) ZEND_MODULE_GLOBALS_ACCESSOR(tideways_xhprof, v)
 
@@ -49,12 +49,14 @@ static zend_always_inline xhprof_frame_t* tracing_fast_alloc_frame(TSRMLS_D)
     xhprof_frame_t *p;
 
     p = TXRG(frame_free_list);
-
     if (p) {
+        p->call_bucket = NULL;
         TXRG(frame_free_list) = p->previous_frame;
         return p;
     } else {
-        return (xhprof_frame_t *)emalloc(sizeof(xhprof_frame_t));
+        p = (xhprof_frame_t *)emalloc(sizeof(xhprof_frame_t));
+        p->call_bucket = NULL;
+        return p;
     }
 }
 
@@ -99,75 +101,13 @@ static zend_always_inline zend_string* tracing_get_function_name(zend_execute_da
     return curr_func->common.function_name;
 }
 
-xhprof_callgraph_bucket* find_bucket_in_children(xhprof_callgraph_bucket *parent_bucket,xhprof_frame_t *current_frame){
-    if(!parent_bucket){
-        return NULL;
-    }
-    xhprof_callgraph_bucket *bucket = parent_bucket->children;
-    while(bucket){
-        if(bucket->child_class == current_frame->class_name && zend_string_equals(bucket->child_function, current_frame->function_name)){
-            return bucket;
-        }
-        bucket = bucket->next_sibling;
-    }
-    return NULL;
-}
-
-void add_bucket_to_parent_bucket(xhprof_callgraph_bucket *parent_bucket,xhprof_callgraph_bucket *bucket){
-    xhprof_callgraph_bucket *bucket;
-    if(!parent_bucket){
-        return;
-    }
-    if(!parent_bucket->children){
-        parent_bucket->children = bucket;
-        return;
-    }
-    bucket = parent_bucket->children;
-    while(bucket->next_sibling){
-        bucket = bucket->next_sibling;
-    }
-    bucket->next_sibling = bucket;
-}
-
-void init_call_bucket(xhprof_frame_t *current_frame){
-    xhprof_frame_t *parent_frame = TXRG(callgraph_frames);
-    xhprof_callgraph_bucket *parent_bucket = NULL;
-    xhprof_callgraph_bucket *bucket;
-
-    if(parent_frame){
-        parent_bucket = parent_frame->call_bucket;
-    }
-    bucket = find_bucket_in_children(parent_bucket,current_frame);
-
-    if(bucket){
-        return bucket;
-    }
-    bucket = emalloc(sizeof(xhprof_callgraph_bucket));
-    bucket->child_class = current_frame->class_name ? zend_string_copy(current_frame->class_name) : NULL;
-    bucket->child_function = zend_string_copy(current_frame->function_name);
-
-    bucket->count = 0;
-    bucket->wall_time = 0;
-    bucket->cpu_time = 0;
-    bucket->memory = 0;
-    bucket->memory_peak = 0;
-    bucket->num_alloc = 0;
-    bucket->num_free = 0;
-    bucket->amount_alloc = 0;
-    bucket->child_recurse_level = current_frame->recurse_level;
-    bucket->parent = parent_bucket;
-    add_bucket_to_parent_bucket(parent_bucket,bucket);
-
-    return bucket;
-}
-
 zend_always_inline static int tracing_enter_frame_callgraph(zend_string *root_symbol, zend_execute_data *execute_data TSRMLS_DC)
 {
     zend_string *function_name = (root_symbol != NULL) ? zend_string_copy(root_symbol) : tracing_get_function_name(execute_data TSRMLS_CC);
     xhprof_frame_t *current_frame;
     xhprof_frame_t *p;
     int recurse_level = 0;
-    xhprof_callgraph_bucket *bucket;
+    xhprof_callgraph_bucket *bucket = NULL;
 
     if (function_name == NULL) {
         return 0;
@@ -215,13 +155,12 @@ zend_always_inline static int tracing_enter_frame_callgraph(zend_string *root_sy
     current_frame->recurse_level = recurse_level;
 
     /* Update entries linked list */
-    bucket = init_call_bucket(current_frame);
+    bucket = init_find_call_bucket(current_frame);
     current_frame->call_bucket = bucket;
-    TXRG(callgraph_frames) = current_frame;
-
     if(root_symbol != NULL){
         TXRG(callgraph_tree) = bucket;
     }
+    TXRG(callgraph_frames) = current_frame;
 
     return 1;
 }
@@ -233,24 +172,25 @@ zend_always_inline static void tracing_exit_frame_callgraph(TSRMLS_D)
     zend_long duration = time_milliseconds(TXRG(clock_source), TXRG(timebase_factor)) - current_frame->wt_start;
 
     xhprof_callgraph_bucket *bucket = current_frame->call_bucket;
+    if(bucket){
+        bucket->count++;
+        bucket->wall_time += duration;
 
-    bucket->count++;
-    bucket->wall_time += duration;
+        bucket->num_alloc += TXRG(num_alloc) - current_frame->num_alloc;
+        bucket->num_free += TXRG(num_free) - current_frame->num_free;
+        bucket->amount_alloc += TXRG(amount_alloc) - current_frame->amount_alloc;
 
-    bucket->num_alloc += TXRG(num_alloc) - current_frame->num_alloc;
-    bucket->num_free += TXRG(num_free) - current_frame->num_free;
-    bucket->amount_alloc += TXRG(amount_alloc) - current_frame->amount_alloc;
+        if (TXRG(flags) & TIDEWAYS_XHPROF_FLAGS_CPU) {
+            bucket->cpu_time += (cpu_timer() - current_frame->cpu_start);
+        }
 
-    if (TXRG(flags) & TIDEWAYS_XHPROF_FLAGS_CPU) {
-        bucket->cpu_time += (cpu_timer() - current_frame->cpu_start);
-    }
+        if (TXRG(flags) & TIDEWAYS_XHPROF_FLAGS_MEMORY_MU) {
+            bucket->memory += (zend_memory_usage(0 TSRMLS_CC) - current_frame->mu_start);
+        }
 
-    if (TXRG(flags) & TIDEWAYS_XHPROF_FLAGS_MEMORY_MU) {
-        bucket->memory += (zend_memory_usage(0 TSRMLS_CC) - current_frame->mu_start);
-    }
-
-    if (TXRG(flags) & TIDEWAYS_XHPROF_FLAGS_MEMORY_PMU) {
-        bucket->memory_peak += (zend_memory_peak_usage(0 TSRMLS_CC) - current_frame->pmu_start);
+        if (TXRG(flags) & TIDEWAYS_XHPROF_FLAGS_MEMORY_PMU) {
+            bucket->memory_peak += (zend_memory_peak_usage(0 TSRMLS_CC) - current_frame->pmu_start);
+        }
     }
 
     TXRG(function_hash_counters)[current_frame->hash_code]--;

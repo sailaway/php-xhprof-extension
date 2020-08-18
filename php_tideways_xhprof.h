@@ -39,8 +39,6 @@ typedef struct xhprof_frame_t xhprof_frame_t;
 // 改为树结构
 typedef struct xhprof_callgraph_bucket_t {
     zend_ulong key;
-//    zend_string *parent_class;
-//    zend_string *parent_function;
     int parent_recurse_level;
     zend_string *child_class;
     zend_string *child_function;
@@ -48,7 +46,6 @@ typedef struct xhprof_callgraph_bucket_t {
     struct xhprof_callgraph_bucket_t *parent;
     struct xhprof_callgraph_bucket_t *children;
     struct xhprof_callgraph_bucket_t *next_sibling;
-    int index;
     zend_long count;
     zend_long wall_time;
     zend_long cpu_time;
@@ -90,7 +87,7 @@ ZEND_BEGIN_MODULE_GLOBALS(tideways_xhprof)
     xhprof_frame_t *frame_free_list;
     zend_ulong function_hash_counters[TIDEWAYS_XHPROF_CALLGRAPH_COUNTER_SIZE];
     // NOT TO USE THIS variable,use callgraph_tree instead
-    xhprof_callgraph_bucket* callgraph_buckets[TIDEWAYS_XHPROF_CALLGRAPH_SLOTS];
+    // xhprof_callgraph_bucket* callgraph_buckets[TIDEWAYS_XHPROF_CALLGRAPH_SLOTS];
     xhprof_callgraph_bucket* callgraph_tree;
     zend_long flags;
     long int num_alloc;
